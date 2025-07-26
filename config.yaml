@@ -1,0 +1,16 @@
+credentials:
+  usernames:
+    familytlc:
+      email: familytlc321@gmail.com
+      name: familytlc
+      password: $2b$12$kAguG34IgBLj5RTQrL8X9.jmE3KqLHFY3R9w7XLEnMP0ENsnEX.U.
+
+cookie:
+  expiry_days: 30
+  key: some_random_key_1234
+  name: chatbot_auth_cookie
+
+preauthorized:
+  emails:
+    - familytlc321@gmail.com
+
