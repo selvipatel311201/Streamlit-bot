@@ -12,6 +12,7 @@ openpyxl==3.1.5
 
 # NLP & Semantic Search
 sentence-transformers==2.2.2
+sentencepiece==0.1.99
 faiss-cpu==1.7.4
 
 # Google Drive API
