@@ -1,3 +1,4 @@
+
 # Core app
 streamlit
 
@@ -5,7 +6,7 @@ streamlit
 pandas
 numpy
 
-# Document parsing
+# Document parsing and file handling
 Pillow
 PyPDF2
 python-pptx
@@ -17,12 +18,11 @@ sentence-transformers
 sentencepiece
 faiss-cpu
 
-# Google Drive API
+# Google Drive API and Auth
 google-api-python-client
 google-auth
 google-auth-oauthlib
 google-auth-httplib2
 oauth2client
 
-#
 
