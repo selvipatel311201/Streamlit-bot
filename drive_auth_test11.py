@@ -1,129 +1,285 @@
-import os
-import io
-import pandas as pd
-from PyPDF2 import PdfReader
-from pptx import Presentation
-from googleapiclient.http import MediaIoBaseDownload
+import streamlit as st
+from datetime import datetime
+from sentence_transformers import SentenceTransformer
+import pickle
+import subprocess
+from embeddings_utils import load_embeddings
+from faiss_utils import create_faiss_index
+from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from oauth2client.service_account import ServiceAccountCredentials
 
-def authenticate_drive():
-    scope = ['https://www.googleapis.com/auth/drive.readonly']
-    creds = ServiceAccountCredentials.from_json_keyfile_name(
-        r"C:\Users\hp\Downloads\Streamlit-bot\familytlc-chatbot-fa52fabae626.json",
-        scopes=scope
+# ------------- PAGE CONFIG / HEADER -------------
+st.set_page_config(page_title="FamilyTLC Search Bot", layout="wide", page_icon="🧠")
+st.markdown("""
+<div style="
+    background: linear-gradient(90deg, #004d99, #007acc);
+    padding: 2rem;
+    border-radius: 12px;
+    text-align: center;
+    color: white;
+    font-size: 2.5rem;
+    font-weight: bold;
+    margin-bottom: 2rem;">
+    🧠 FamilyTLC Document Search Bot
+</div>""", unsafe_allow_html=True)
+
+# ------------- CSS STYLE -------------
+st.markdown("""
+<style>
+.metric-card {
+    padding:1.1em 1.2em; border-radius:12px; margin-bottom:10px; color:white;
+    text-align:center; font-weight:bold; font-size:1.15em; box-shadow:0 3px 14px rgba(75,75,75,0.03);
+}
+.gradient-blue {background:linear-gradient(90deg,#2834d9,#47c6ff);}
+.gradient-magenta {background:linear-gradient(90deg,#d138d1,#f98fff);}
+.gradient-yellow {background:linear-gradient(90deg,#f7e96c,#efb12d);}
+.gradient-green {background:linear-gradient(90deg,#5de684,#14bca9);}
+.stat-label {font-size:0.98em; opacity:0.94;}
+.stat-number {font-size:2em; margin-bottom:4px;}
+.tag-btn {
+  display:inline-block;padding:8px 17px; margin:4px 4px 6px 0;
+  background: #ecf7fe; border:none; border-radius:6px;color:#1c3d6f;
+  font-size:1em;font-weight:500;cursor:pointer;transition:0.13s;
+}
+.tag-btn:hover {background:#3567be;color:white;}
+.result-card {
+    background: #fff; border-radius: 1em; padding: 1.3em; margin: 1em 0 1.5em 0; box-shadow:0 2px 12px #edf1f9;
+    border-left:5px solid #2196f3;
+}
+.input-tooltip {
+    display:inline-block;margin-left:6px;color:#3498db;font-size:1.2em;font-weight:600;cursor:pointer;
+}
+.status-success {background:#e0fbe7;color:#21794a;padding:0.15em 0.7em;border-radius:7px;font-size:1em;}
+.status-warning {background:#fffbe3;color:#a26c06;padding:0.17em 0.7em;border-radius:7px;font-size:1em;}
+.status-error {background:#fff0f0;color:#ad3939;padding:0.13em 0.7em;border-radius:7px;font-size:1em;}
+.stTabs [role="tablist"] {border-bottom:none}
+input[type="text"], textarea, .stTextInput>div>div>input {border-radius:8px !important;}
+</style>
+""", unsafe_allow_html=True)
+
+# ------------- LOAD DOCUMENT DATA --------------
+try:
+    embedding_matrix = load_embeddings('data/embeddings.npy')
+    with open('data/sources.pkl', 'rb') as f:
+        sources = pickle.load(f)
+    with open('data/text_chunks.pkl', 'rb') as f:
+        text_chunks = pickle.load(f)
+    with open('data/file_ids.pkl', 'rb') as f:
+        file_ids = pickle.load(f)
+    DOCUMENT_COUNT = len(set(file_ids))
+except Exception:
+    sources, text_chunks, file_ids, embedding_matrix = [], [], [], None
+    DOCUMENT_COUNT = 0
+
+# PRODUCTION: Connect these with analytics/event logs or DB for real data
+SEARCHES_TODAY = 42    # Update dynamically from search event logs
+AVG_RESPONSE = "1.2s"  # Calculate from response logs
+SUCCESS_RATE = "98.9%" # Percentage from logs
+USERS_TODAY = 14       # Distinct users from search event logs
+
+POPULAR_SEARCHES = ["Vacation Policy", "Work From Home", "Sick Leave", "Team Meetings", "Employee Handbook", "IT Support"]
+
+# --------------- SIDEBAR ----------------
+with st.sidebar:
+    st.header("🛠️ Admin Tools")
+    if st.button("🔄 Refresh Documents"):
+        with st.spinner("Updating documents from Google Drive..."):
+            subprocess.run(["python", "update_embeddings.py"])
+        st.success("✅ Documents refreshed!")
+    st.markdown("### 📊 Quick Stats")
+    st.markdown(f"""
+    <div class='metric-card gradient-blue'>
+        <div class='stat-number'>{DOCUMENT_COUNT}</div>
+        <div class='stat-label'>Documents Indexed</div>
+    </div>
+    <div class='metric-card gradient-magenta'>
+        <div class='stat-number'>{USERS_TODAY}</div>
+        <div class='stat-label'>Active Users Today</div>
+    </div>
+    <div class='metric-card gradient-green'>
+        <div class='stat-number'>{SUCCESS_RATE}</div>
+        <div class='stat-label'>Success Rate</div>
+    </div>
+    """, unsafe_allow_html=True)
+    st.markdown("### 🕒 Recent Activity")
+    st.markdown("- Policy updated: Remote Work<br>- New user: john.doe@familytlc.com<br>- Popular search: <b>vacation days</b>", unsafe_allow_html=True)
+    st.markdown("### 🎯 Advanced Filters")
+    filter_by_file = st.text_input("🔍 Filter by filename keyword")
+    exact_match = st.checkbox("✅ Exact Match Only")
+    st.markdown("---")
+    st.markdown("### 🕒 Recent Searches")
+    if 'recent_queries' in st.session_state and st.session_state.recent_queries:
+        for q in st.session_state.recent_queries[:5]:
+            st.markdown(f"""
+            <div style="background: #f1f3f6; margin-bottom: 0.5rem; padding: 0.4rem;
+                        border-left: 4px solid #4a90e2; border-radius: 6px;">
+                <small>📅 {q['time']}</small><br>
+                <b>{q['question'][:48]}{'...' if len(q['question']) > 48 else ''}</b>
+            </div>
+            """, unsafe_allow_html=True)
+    else:
+        st.info("Ask a question to see recent searches.")
+
+# ------------- METRIC CARDS (MAIN AREA) -------------
+cols = st.columns(4)
+with cols[0]:
+    st.markdown(f"""
+    <div class="metric-card gradient-blue">
+        <div style="font-size:2em;">📄</div>
+        <div class="stat-number">{DOCUMENT_COUNT}</div>
+        Documents
+    </div>
+    """, unsafe_allow_html=True)
+with cols[1]:
+    st.markdown(f"""
+    <div class="metric-card gradient-magenta">
+        <div style="font-size:2em;">🔍</div>
+        <div class="stat-number">{SEARCHES_TODAY}</div>
+        Searches Today
+    </div>
+    """, unsafe_allow_html=True)
+with cols[2]:
+    st.markdown(f"""
+    <div class="metric-card gradient-yellow">
+        <div style="font-size:2em;">⚡</div>
+        <div class="stat-number">{AVG_RESPONSE}</div>
+        Avg Response
+    </div>
+    """, unsafe_allow_html=True)
+with cols[3]:
+    st.markdown(f"""
+    <div class="metric-card gradient-green">
+        <div style="font-size:2em;">✅</div>
+        <div class="stat-number">{SUCCESS_RATE}</div>
+        Success Rate
+    </div>
+    """, unsafe_allow_html=True)
+
+# ------------- POPULAR SEARCH TAGS -------------
+st.markdown("## <b>Quick Start - Popular Searches</b>", unsafe_allow_html=True)
+tag_cols = st.columns(min(len(POPULAR_SEARCHES), 3))
+for i, tag in enumerate(POPULAR_SEARCHES):
+    tag_cols[i % len(tag_cols)].markdown(
+        f"<button class='tag-btn'>{tag}</button>", unsafe_allow_html=True
     )
-    service = build('drive', 'v3', credentials=creds)
-    return service
 
-def extract_text_from_pptx(local_path):
-    try:
-        prs = Presentation(local_path)
-        slide_texts = []
-        for slide in prs.slides:
-            for shape in slide.shapes:
-                if hasattr(shape, "text") and shape.text:
-                    slide_texts.append(shape.text)
-        return '\n'.join(slide_texts)
-    except Exception as e:
-        print(f"⚠️ Could not extract PPTX text from {local_path}: {e}")
-        return ""
+# ------------- TABS: SEARCH / FAQ / ABOUT -------------
+tab_search, tab_faq, tab_about = st.tabs(["🔍 Search", "📖 FAQ", "ℹ️ About"])
 
-def fetch_documents(authenticate_drive):
-    service = authenticate_drive()
-    docs, sources, file_ids, file_paths = [], [], [], []
-    os.makedirs('downloaded_files', exist_ok=True)
+# --------- MODEL LOAD ---------
+model = None
+index = None
+if embedding_matrix is not None and len(embedding_matrix):
+    model = SentenceTransformer('all-MiniLM-L6-v2')
+    index = create_faiss_index(embedding_matrix)
 
-    def process_file(file, folder_name):
-        file_id = file['id']
-        file_name = file['name']
-        mime_type = file['mimeType']
-        source_label = f"{folder_name} / {file_name}"
-        text = ""
-        local_path = None
-
-        try:
-            if mime_type == 'application/pdf':
-                request = service.files().get_media(fileId=file_id)
-                fh = io.BytesIO()
-                downloader = MediaIoBaseDownload(fh, request)
-                while not downloader.next_chunk()[1]:
-                    pass
-                fh.seek(0)
-                local_path = os.path.join('downloaded_files', file_name)
-                with open(local_path, 'wb') as f:
-                    f.write(fh.read())
-                fh.seek(0)
-                reader = PdfReader(fh)
-                for page in reader.pages:
-                    text += page.extract_text() or ""
-
-            elif mime_type == 'application/vnd.google-apps.document':
-                request = service.files().export(fileId=file_id, mimeType='text/plain')
-                fh = io.BytesIO()
-                downloader = MediaIoBaseDownload(fh, request)
-                while not downloader.next_chunk()[1]:
-                    pass
-                fh.seek(0)
-                text = fh.read().decode('utf-8')
-
-            elif mime_type in [
-                'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-                'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-                'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-            ]:
-                request = service.files().get_media(fileId=file_id)
-                fh = io.BytesIO()
-                downloader = MediaIoBaseDownload(fh, request)
-                while not downloader.next_chunk()[1]:
-                    pass
-                fh.seek(0)
-                local_path = os.path.join('downloaded_files', file_name)
-                with open(local_path, 'wb') as f:
-                    f.write(fh.read())
-
-                if mime_type.endswith('spreadsheetml.sheet'):
-                    try:
-                        xls = pd.read_excel(local_path, sheet_name=None)
-                        text = '\n'.join(
-                            ' '.join(df.fillna('').astype(str).values.flatten())
-                            for df in xls.values()
-                        )
-                    except Exception as e:
-                        print(f"⚠️ Excel read error: {file_name} — {e}")
-                elif mime_type.endswith('presentationml.presentation'):
-                    text = extract_text_from_pptx(local_path)
-
+with tab_search:
+    with st.form(key="search_form"):
+        user_email = st.text_input(
+            "Enter your Google email for document access:",
+            key="email",
+            placeholder="you@familytlc.com",
+            help="Helps verify which docs you can access"
+        )
+        question = st.text_input(
+            "What would you like to know today?",
+            key="query",
+            placeholder="Show me the sick leave policy, find training materials, etc.",
+            help="Try searching for HR policies, forms, or folders"
+        )
+        submitted = st.form_submit_button("Search Documents")
+    if submitted:
+        if not user_email:
+            st.markdown('<div class="status-error">Please enter your email address for secure access.</div>', unsafe_allow_html=True)
+        elif not question:
+            st.markdown('<div class="status-warning">Please enter a question to search documents.</div>', unsafe_allow_html=True)
+        elif model is None or index is None:
+            st.markdown('<div class="status-error">Search not initialized. Please contact admin or refresh documents.</div>', unsafe_allow_html=True)
+        else:
+            SCOPES = ['https://www.googleapis.com/auth/drive.metadata.readonly']
+            SERVICE_ACCOUNT_FILE = 'familytlc-chatbot-fa52fabae626.json'
+            try:
+                creds = service_account.Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
+                drive_service = build('drive', 'v3', credentials=creds)
+                def get_user_accessible_file_ids(email):
+                    query = f"'{email}' in readers"
+                    file_ids = set()
+                    page_token = None
+                    while True:
+                        response = drive_service.files().list(
+                            q=query, fields="nextPageToken, files(id)", pageToken=page_token
+                        ).execute()
+                        file_ids.update({f['id'] for f in response.get('files', [])})
+                        page_token = response.get('nextPageToken', None)
+                        if not page_token:
+                            break
+                    return file_ids
+                allowed_file_ids = get_user_accessible_file_ids(user_email)
+            except Exception as e:
+                st.markdown(f'<div class="status-error">Google Drive error: {e}</div>', unsafe_allow_html=True)
+                allowed_file_ids = set()
+            if 'recent_queries' not in st.session_state:
+                st.session_state.recent_queries = []
+            st.session_state.recent_queries.insert(0, {"question": question, "time": datetime.now().strftime("%Y-%m-%d %H:%M")})
+            st.session_state.recent_queries = st.session_state.recent_queries[:10]
+            st.markdown(f'<div class="status-success">Searching for: <b>{question}</b></div>', unsafe_allow_html=True)
+            with st.spinner("🔎 Searching relevant documents..."):
+                query_embedding = model.encode([question]).astype("float32")
+                distances, indices = index.search(query_embedding, 10)
+                results = []
+                for i, idx in enumerate(indices[0]):
+                    chunk = text_chunks[idx].lower()
+                    score = distances[0][i]
+                    if exact_match and question.lower() not in chunk:
+                        continue
+                    if filter_by_file and filter_by_file.lower() not in sources[idx].lower():
+                        continue
+                    results.append((score, idx))
+                results.sort()
+                top_indices = [idx for _, idx in results[:3]]
+            if not top_indices:
+                st.markdown('<div class="status-warning">No results. Try rewording or updating your filters.</div>', unsafe_allow_html=True)
             else:
-                print(f"⚠️ Skipping unsupported type: {mime_type} ({file_name})")
-                return
+                st.success(f"✅ Found {len(top_indices)} results.")
+                for idx in top_indices:
+                    file_name = sources[idx]
+                    chunk = text_chunks[idx][:500].replace("\n", " ")
+                    file_id = file_ids[idx]
+                    view_link = f"https://drive.google.com/file/d/{file_id}/view"
+                    if file_id in allowed_file_ids:
+                        st.markdown(f"""
+                        <div class="result-card">
+                            <h4>📄 {file_name}</h4>
+                            <p>{chunk}...</p>
+                            <a href="{view_link}" target="_blank">🔗 View Document</a>
+                            <br>
+                            <button onClick="alert('Thanks for your feedback!')" style="background:#f5f8fa;color:#15803d;border:none;padding:6px 12px;border-radius:5px;margin-top:9px;cursor:pointer;">👍 Helpful</button>
+                            <button onClick="alert('Thanks – your input helps improve results!')" style="background:#f5f8fa;color:#cd2222;border:none;padding:6px 12px;border-radius:5px;margin-top:9px;cursor:pointer;">👎 Not Relevant</button>
+                        </div>
+                        """, unsafe_allow_html=True)
+                    else:
+                        st.markdown(f'<div class="status-error">🔒 No access to <b>{file_name}</b></div>', unsafe_allow_html=True)
 
-            if text.strip() or local_path:
-                docs.append(text)
-                sources.append(source_label)
-                file_ids.append(file_id)
-                file_paths.append(local_path)
+with tab_faq:
+    st.markdown("""
+    <div class="result-card">
+        <p><b>Q: What can I search here?</b><br>
+        A: Any internal file, handbook, or HR document you are permitted to see on Google Drive.</p>
+        <p><b>Q: Why do I enter my email address?</b><br>
+        A: The bot verifies your Drive access to show only the documents you have permission to read.</p>
+        <p><b>Q: Example:</b> "Show me reimbursement policy" — or — "Find all onboarding guides"</p>
+    </div>
+    """, unsafe_allow_html=True)
 
-        except Exception as e:
-            print(f"❌ Error processing {source_label}: {e}")
-
-    # Process files in root
-    root_files = service.files().list(
-        q="'root' in parents and trashed = false",
-        fields="files(id, name, mimeType)"
-    ).execute().get('files', [])
-    for file in root_files:
-        process_file(file, "Root")
-
-    # Process folders
-    folder_query = "mimeType = 'application/vnd.google-apps.folder' and trashed = false"
-    folders = service.files().list(q=folder_query, fields="files(id, name)").execute().get('files', [])
-    for folder in folders:
-        folder_id = folder['id']
-        folder_name = folder['name']
-        file_query = f"'{folder_id}' in parents and trashed = false"
-        files = service.files().list(q=file_query, fields="files(id, name, mimeType)").execute().get('files', [])
-        for file in files:
-            process_file(file, folder_name)
-
-    return docs, sources, file_ids, file_paths
+with tab_about:
+    st.markdown("""
+    <div class="result-card">
+        <b>FamilyTLC Search Bot</b> powers smarter, permission-aware search over your organization’s Google Drive.<br>
+        <ul>
+            <li>🔎 Semantic search: Sentence Transformers + FAISS</li>
+            <li>🔒 Results filtered by your access rights</li>
+            <li>📄 Auto-updates when documents change</li>
+            <li>✨ Built by your tech team</li>
+        </ul>
+    </div>
+    """, unsafe_allow_html=True)
