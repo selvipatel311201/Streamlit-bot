@@ -3,8 +3,11 @@ from datetime import datetime
 from sentence_transformers import SentenceTransformer
 import pickle
 import subprocess
+import json
+
 from embeddings_utils import load_embeddings
 from faiss_utils import create_faiss_index
+
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
@@ -71,11 +74,11 @@ except Exception:
     sources, text_chunks, file_ids, embedding_matrix = [], [], [], None
     DOCUMENT_COUNT = 0
 
-# PRODUCTION: Connect these with analytics/event logs or DB for real data
-SEARCHES_TODAY = 42    # Update dynamically from search event logs
-AVG_RESPONSE = "1.2s"  # Calculate from response logs
-SUCCESS_RATE = "98.9%" # Percentage from logs
-USERS_TODAY = 14       # Distinct users from search event logs
+# Placeholder stats (replace with real analytics for production)
+SEARCHES_TODAY = 42
+AVG_RESPONSE = "1.2s"
+SUCCESS_RATE = "98.9%"
+USERS_TODAY = 14
 
 POPULAR_SEARCHES = ["Vacation Policy", "Work From Home", "Sick Leave", "Team Meetings", "Employee Handbook", "IT Support"]
 
@@ -188,6 +191,7 @@ with tab_search:
             help="Try searching for HR policies, forms, or folders"
         )
         submitted = st.form_submit_button("Search Documents")
+
     if submitted:
         if not user_email:
             st.markdown('<div class="status-error">Please enter your email address for secure access.</div>', unsafe_allow_html=True)
@@ -197,31 +201,44 @@ with tab_search:
             st.markdown('<div class="status-error">Search not initialized. Please contact admin or refresh documents.</div>', unsafe_allow_html=True)
         else:
             SCOPES = ['https://www.googleapis.com/auth/drive.metadata.readonly']
-            SERVICE_ACCOUNT_FILE = 'familytlc-chatbot-5b74c357eb87.json'
+
+            # Load credentials from secrets and write to file
+            creds_dict = dict(st.secrets["GOOGLE_CREDENTIALS"])
+            with open("service_account.json", "w") as f:
+                json.dump(creds_dict, f)
+
+            # Authenticate to Google Drive with service account
+            creds = service_account.Credentials.from_service_account_file("service_account.json", scopes=SCOPES)
+            drive_service = build('drive', 'v3', credentials=creds)
+
+            def get_user_accessible_file_ids(email):
+                query = f"'{email}' in readers"
+                file_ids = set()
+                page_token = None
+                while True:
+                    response = drive_service.files().list(
+                        q=query,
+                        fields="nextPageToken, files(id)",
+                        pageToken=page_token,
+                    ).execute()
+                    file_ids.update({f['id'] for f in response.get('files', [])})
+                    page_token = response.get('nextPageToken', None)
+                    if not page_token:
+                        break
+                return file_ids
+
             try:
-                creds = service_account.Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
-                drive_service = build('drive', 'v3', credentials=creds)
-                def get_user_accessible_file_ids(email):
-                    query = f"'{email}' in readers"
-                    file_ids = set()
-                    page_token = None
-                    while True:
-                        response = drive_service.files().list(
-                            q=query, fields="nextPageToken, files(id)", pageToken=page_token
-                        ).execute()
-                        file_ids.update({f['id'] for f in response.get('files', [])})
-                        page_token = response.get('nextPageToken', None)
-                        if not page_token:
-                            break
-                    return file_ids
                 allowed_file_ids = get_user_accessible_file_ids(user_email)
             except Exception as e:
                 st.markdown(f'<div class="status-error">Google Drive error: {e}</div>', unsafe_allow_html=True)
                 allowed_file_ids = set()
+
+            # Record user query in session state
             if 'recent_queries' not in st.session_state:
                 st.session_state.recent_queries = []
             st.session_state.recent_queries.insert(0, {"question": question, "time": datetime.now().strftime("%Y-%m-%d %H:%M")})
             st.session_state.recent_queries = st.session_state.recent_queries[:10]
+
             st.markdown(f'<div class="status-success">Searching for: <b>{question}</b></div>', unsafe_allow_html=True)
             with st.spinner("🔎 Searching relevant documents..."):
                 query_embedding = model.encode([question]).astype("float32")
@@ -237,6 +254,7 @@ with tab_search:
                     results.append((score, idx))
                 results.sort()
                 top_indices = [idx for _, idx in results[:3]]
+
             if not top_indices:
                 st.markdown('<div class="status-warning">No results. Try rewording or updating your filters.</div>', unsafe_allow_html=True)
             else:
@@ -259,6 +277,7 @@ with tab_search:
                         """, unsafe_allow_html=True)
                     else:
                         st.markdown(f'<div class="status-error">🔒 No access to <b>{file_name}</b></div>', unsafe_allow_html=True)
+
 
 with tab_faq:
     st.markdown("""
