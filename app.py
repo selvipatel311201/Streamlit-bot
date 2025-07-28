@@ -197,7 +197,7 @@ with tab_search:
             st.markdown('<div class="status-error">Search not initialized. Please contact admin or refresh documents.</div>', unsafe_allow_html=True)
         else:
             SCOPES = ['https://www.googleapis.com/auth/drive.metadata.readonly']
-            SERVICE_ACCOUNT_FILE = 'familytlc-chatbot-6e2d1588fc4a.json'
+            SERVICE_ACCOUNT_FILE = 'familytlc-chatbot-5b74c357eb87.json'
             try:
                 creds = service_account.Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
                 drive_service = build('drive', 'v3', credentials=creds)
